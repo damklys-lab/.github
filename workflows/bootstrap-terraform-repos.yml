@@ -1,0 +1,99 @@
+name: Bootstrap Terraform Repos
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Application Name (np. website)"
+        type: string
+        required: true
+      environment:
+        description: "Environment"
+        type: choice
+        required: true
+        options: [dev, qa, stg, prd]
+
+permissions:
+  contents: read
+
+env:
+  ORG: damklys-lab
+  # Nazwy repozytoriów template'ów w Twojej organizacji:
+  INFRA_TEMPLATE_REPO: terraform-app-infra
+  CONFIG_TEMPLATE_REPO: terraform-app-env-config  # jeśli masz 'terraform-app-config-env', zmień tutaj
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs & compute names
+        id: names
+        run: |
+          APP="${{ github.event.inputs.app_name }}"
+          ENV="${{ github.event.inputs.environment }}"
+
+          # prosty sanitize: małe litery i myślniki
+          APP_SANITIZED=$(echo "$APP" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//')
+
+          INFRA_REPO="terraform-${APP_SANITIZED}-infra"
+          CONFIG_REPO="terraform-${APP_SANITIZED}-config-${ENV}"
+
+          echo "infra_repo=$INFRA_REPO" >> $GITHUB_OUTPUT
+          echo "config_repo=$CONFIG_REPO" >> $GITHUB_OUTPUT
+
+      - name: Create repositories from templates if missing
+        uses: actions/github-script@v7
+        env:
+          ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        with:
+          github-token: ${{ env.ORG_ADMIN_TOKEN }}
+          script: |
+            const org = process.env.ORG;
+            const infraTemplate = process.env.INFRA_TEMPLATE_REPO;
+            const configTemplate = process.env.CONFIG_TEMPLATE_REPO;
+
+            const infraRepo = core.getInput('infra_repo', { required: false }) || process.env['INFRA_REPO'];
+            const configRepo = core.getInput('config_repo', { required: false }) || process.env['CONFIG_REPO'];
+
+            // GH passes outputs from previous step via env only if exported; we’ll read from step outputs:
+            const infraName = '${{ steps.names.outputs.infra_repo }}';
+            const configName = '${{ steps.names.outputs.config_repo }}';
+
+            async function exists(owner, repo) {
+              try {
+                await github.rest.repos.get({ owner, repo });
+                return true;
+              } catch (e) {
+                if (e.status === 404) return false;
+                throw e;
+              }
+            }
+
+            async function ensureFromTemplate(templateOwner, templateRepo, targetOwner, targetName, visibility='private') {
+              if (await exists(targetOwner, targetName)) {
+                core.info(`Repo ${targetOwner}/${targetName} already exists – skipping create.`);
+                const { data } = await github.rest.repos.get({ owner: targetOwner, repo: targetName });
+                return data.html_url;
+              }
+              core.info(`Creating ${targetOwner}/${targetName} from template ${templateOwner}/${templateRepo} ...`);
+              const { data } = await github.request('POST /repos/{template_owner}/{template_repo}/generate', {
+                template_owner: templateOwner,
+                template_repo: templateRepo,
+                owner: targetOwner,
+                name: targetName,
+                private: visibility !== 'public',
+                include_all_branches: false
+              });
+              return data.html_url;
+            }
+
+            const infraUrl = await ensureFromTemplate(org, infraTemplate, org, infraName, 'private');
+            core.setOutput('infra_url', infraUrl);
+
+            const configUrl = await ensureFromTemplate(org, configTemplate, org, configName, 'private');
+            core.setOutput('config_url', configUrl);
+
+      - name: Print results
+        run: |
+          echo "Infra repo:   ${{ steps.names.outputs.infra_repo }}"
+          echo "Config repo:  ${{ steps.names.outputs.config_repo }}"
