@@ -18,9 +18,8 @@ permissions:
 
 env:
   ORG: damklys-lab
-  # Nazwy repozytoriów template'ów w Twojej organizacji:
   INFRA_TEMPLATE_REPO: terraform-app-infra
-  CONFIG_TEMPLATE_REPO: terraform-app-env-config  # jeśli masz 'terraform-app-config-env', zmień tutaj
+  CONFIG_TEMPLATE_REPO: terraform-app-config-env 
 
 jobs:
   generate:
